@@ -287,14 +287,11 @@ class GDClient(atom.client.AtomPubClient):
         location = (response.getheader('Location')
                     or response.getheader('location'))
         if location is not None:
-          m = re.compile('[\?\&]gsessionid=(\w*)').search(location)
-          if m is not None:
-            self.__gsessionid = m.group(1)
           # Make a recursive call with the gsession ID in the URI to follow
           # the redirect.
-          return self.request(method=method, uri=uri, auth_token=auth_token,
-                              http_request=http_request, converter=converter,
-                              desired_class=desired_class,
+          return self.request(method=method, uri=location, 
+                              auth_token=auth_token, http_request=http_request,
+                              converter=converter, desired_class=desired_class,
                               redirects_remaining=redirects_remaining-1,
                               **kwargs)
         else:
@@ -994,7 +991,7 @@ class ResumableUploader(object):
                                                 self.total_file_size))
 
     try:
-      response = self.client.request(method='POST', uri=self.upload_uri,
+      response = self.client.request(method='PUT', uri=self.upload_uri,
                                      http_request=http_request,
                                      desired_class=self.desired_class)
       return response
@@ -1080,9 +1077,8 @@ class ResumableUploader(object):
       RequestError if anything other than a HTTP 308 is returned
       when the request raises an exception.
     """
-    # Need to override the POST request for a resumable update (required).
-    customer_headers = {'X-HTTP-Method-Override': 'PUT'}
 
+    customer_headers = {}
     if headers is not None:
       customer_headers.update(headers)
 

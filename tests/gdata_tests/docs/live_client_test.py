@@ -1,6 +1,6 @@
 #!/usr/bin/python
 #
-# Copyright 2009 Google Inc. All Rights Reserved.
+# Copyright 2011 Google Inc. All Rights Reserved.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -17,11 +17,13 @@
 # This module is used for version 2 of the Google Data APIs.
 # These tests attempt to connect to Google servers.
 
+"""Live integration tests of the Google Documents List API."""
 
-__author__ = 'e.bidelman (Eric Bidelman)'
-
+__author__ = 'vicfryzel@google.com (Vic Fryzel)'
 
 import os
+import os.path
+import tempfile
 import time
 import unittest
 import gdata.client
@@ -32,320 +34,506 @@ import gdata.docs.data
 import gdata.test_config as conf
 
 
+RESOURCES = {
+    'document': (gdata.docs.data.DOCUMENT_LABEL,
+                 'Text Document',
+                 'data/test.0.doc',
+                 'data/test.1.doc',
+                 'application/msword',
+                 'doc'),
+    'empty_document': (gdata.docs.data.DOCUMENT_LABEL,
+                       'Empty Text Document',
+                       None,
+                       'data/test.1.doc',
+                       'application/msword',
+                       'txt'),
+    'spreadsheet': (gdata.docs.data.SPREADSHEET_LABEL,
+                    'Spreadsheet',
+                    'data/test.0.csv',
+                    'data/test.1.csv',
+                    'text/csv',
+                    'csv'),
+    'presentation': (gdata.docs.data.PRESENTATION_LABEL,
+                     'Presentation',
+                     'data/test.0.ppt',
+                     'data/test.1.ppt',
+                     'application/vnd.ms-powerpoint',
+                     'ppt'),
+    'drawing': (gdata.docs.data.DRAWING_LABEL,
+                'Drawing',
+                'data/test.0.wmf',
+                'data/test.1.wmf',
+                'application/x-msmetafile',
+                'png'),
+    'pdf': (gdata.docs.data.PDF_LABEL,
+            'PDF',
+            'data/test.0.pdf',
+            'data/test.1.pdf',
+            'application/pdf',
+            None),
+    'file': (gdata.docs.data.FILE_LABEL,
+             'File',
+             'data/test.0.bin',
+             'data/test.1.bin',
+             'application/octet-stream',
+             None),
+    'collection': (gdata.docs.data.COLLECTION_LABEL,
+                   'Collection A',
+                   None,
+                   None,
+                   None,
+                   None)
+}
+
+
 class DocsTestCase(unittest.TestCase):
+  def shortDescription(self):
+    return '%s for %s' % (self.__class__.__name__, self.resource_type)
+
+  def _delete(self, resource):
+    try:
+      self.client.DeleteResource(resource, permanent=True, force=True)
+    except:
+      pass
+
+  def _delete_all(self):
+    resources = self.client.GetAllResources(
+        '/feeds/default/private/full?showfolders=true&showdeleted=true')
+    for resource in resources:
+      self._delete(resource)
+
+  def _create(self):
+    ms = None
+    if self.resource_path is not None and self.resource_mime is not None:
+      ms = gdata.data.MediaSource(
+          file_path=os.path.join(os.path.dirname(__file__), self.resource_path),
+          content_type=self.resource_mime)
+    entry = gdata.docs.data.Resource(type=self.resource_label,
+                                     title=self.resource_title)
+    self.resource = self.client.CreateResource(entry, media=ms)
+
+  def _update(self):
+    ms = None
+    if self.resource_alt_path is not None and self.resource_mime is not None:
+      ms = gdata.data.MediaSource(
+          file_path=os.path.join(os.path.dirname(__file__),
+                                 self.resource_alt_path),
+          content_type=self.resource_mime)
+    self.resource.title.text = '%s Updated' % self.resource_title
+    return self.client.UpdateResource(self.resource, media=ms, force=True,
+                                      new_revision=True)
 
   def setUp(self):
-    self.client = None
-    if conf.options.get_value('runlive') == 'true':
-      self.client = gdata.docs.client.DocsClient()
-      if conf.options.get_value('ssl') == 'true':
-        self.client.ssl = True
-      conf.configure_client(self.client, 'DocsTest', self.client.auth_service)
+    if conf.options.get_value('runlive') != 'true':
+      raise RuntimeError('Live tests require --runlive true')
+
+    self.client = gdata.docs.client.DocsClient()
+    if conf.options.get_value('ssl') == 'true':
+      self.client.ssl = True
+    conf.configure_client(self.client, 'DocsTest', self.client.auth_service)
+    conf.configure_cache(self.client, str(self.__class__))
+    if conf.options.get_value('clean') == 'true':
+      self._delete_all()
+
+    tries = 0
+    while tries < 3:
+      try:
+        tries += 1
+        self._create()
+        break
+      except gdata.client.RequestError:
+        if tries >= 2:
+          self.tearDown()
+          raise
 
   def tearDown(self):
+    if conf.options.get_value('runlive') == 'true':
+      if conf.options.get_value('clean') == 'true':
+        self._delete_all()
+      else:
+        try:
+          self._delete(self.resource)
+        except:
+          pass
     conf.close_client(self.client)
 
 
-class DocsFetchingDataTest(DocsTestCase):
+class ResourcesTest(DocsTestCase):
+  def testGetAllResources(self):
+    results = self.client.GetAllResources(
+        '/feeds/default/private/full?showfolders=true')
+    self.assert_(all(isinstance(item, gdata.docs.data.Resource) \
+        for item in results))
+    self.assertEqual(len(results), 1)
 
-  def testGetDocList(self):
-    if not conf.options.get_value('runlive') == 'true':
-      return
-
-    # Either load the recording or prepare to make a live request.
-    conf.configure_cache(self.client, 'testGetDocList')
-
-    # Query using GetDocList()
-    feed = self.client.GetDocList(limit=1)
-    self.assert_(isinstance(feed, gdata.docs.data.DocList))
+  def testGetResources(self):
+    feed = self.client.GetResources(
+        '/feeds/default/private/full?showfolders=true', limit=1)
+    self.assert_(isinstance(feed, gdata.docs.data.ResourceFeed))
     self.assertEqual(len(feed.entry), 1)
 
-  def testGetDoc(self):
-    if not conf.options.get_value('runlive') == 'true':
-      return
-
-    # Either load the recording or prepare to make a live request.
-    conf.configure_cache(self.client, 'testGetDoc')
-
-    uri = ('http://docs.google.com/feeds/default/private/full/'
-           '-/spreadsheet?max-results=1')
-    feed = self.client.GetDocList(uri, limit=1)
-    self.assertEqual(len(feed.entry), 1)
-    self.assertEqual(feed.entry[0].GetDocumentType(), 'spreadsheet')
-    resource_id = feed.entry[0].resource_id.text
-    entry = self.client.GetDoc(resource_id)
-    self.assert_(isinstance(entry, gdata.docs.data.DocsEntry))
+  def testGetResource(self):
+    entry = self.client.GetResource(self.resource)
+    self.assert_(isinstance(entry, gdata.docs.data.Resource))
+    self.assert_(entry.id.text is not None)
+    self.assert_(entry.title.text is not None)
+    self.assert_(entry.resource_id.text is not None)
+    self.assert_(entry.title.text is not None)
+    entry = self.client.GetResourceBySelfLink(
+        self.resource.GetSelfLink().href)
+    self.assert_(isinstance(entry, gdata.docs.data.Resource))
     self.assert_(entry.id.text is not None)
     self.assert_(entry.title.text is not None)
     self.assert_(entry.resource_id.text is not None)
     self.assert_(entry.title.text is not None)
 
-  def testGetAclFeed(self):
-    if not conf.options.get_value('runlive') == 'true':
-      return
+  def testMoveResource(self):
+    entry = gdata.docs.data.Resource(
+        type=gdata.docs.data.COLLECTION_LABEL,
+        title='Collection B')
+    collection = self.client.CreateResource(entry)
 
-    # Either load the recording or prepare to make a live request.
-    conf.configure_cache(self.client, 'testGetAclFeed')
+    # Start off in 0 collections
+    self.assertEqual(len(self.resource.InCollections()), 0)
+    
+    # Move resource into collection
+    entry = self.client.MoveResource(self.resource, collection)
+    self.assertEqual(len(entry.InCollections()), 1)
+    self.assertEqual(entry.InCollections()[0].title, collection.title.text)
+    self.client.DeleteResource(collection, permanent=True, force=True)
 
-    uri = ('http://docs.google.com/feeds/default/private/full/'
-           '-/mine?max-results=1')
-    feed = self.client.GetDocList(uri=uri)
-    self.assertEqual(len(feed.entry), 1)
-    acl_feed = self.client.GetAclPermissions(feed.entry[0].resource_id.text)
+  def testCopyResource(self):
+    copy_title = '%s Copy' % self.resource_title
+    # Copy only supported for document, spreadsheet, presentation types
+    if self.resource_type in ['document', 'empty_document', 'spreadsheet',
+                              'presentation']:
+      copy = self.client.CopyResource(self.resource, copy_title)
+      self.assertEqual(copy.title.text, copy_title)
+      self.client.DeleteResource(copy, permanent=True, force=True)
+
+    # TODO(vicfryzel): Expect appropriate error for drawings.
+    elif self.resource_type != 'drawing':
+      self.assertRaises(gdata.client.NotImplemented, self.client.CopyResource,
+                        self.resource, copy_title)
+
+  def testDownloadResource(self):
+    tmp = tempfile.mkstemp()
+    if self.resource_type != 'collection':
+      if self.resource_export is not None:
+        extra_params = {'exportFormat': self.resource_export,
+                        'format': self.resource_export}
+        self.client.DownloadResource(self.resource, tmp[1],
+                                     extra_params=extra_params)
+      else:
+        self.client.DownloadResource(self.resource, tmp[1])
+    else:
+      # Cannot download collections
+      self.assertRaises(ValueError, self.client.DownloadResource,
+                        self.resource, tmp[1])
+
+    # Should get a 404
+    entry = gdata.docs.data.Resource(type=gdata.docs.data.DOCUMENT_LABEL,
+                                     title='Does Not Exist')
+    self.assertRaises(AttributeError, self.client.DownloadResource, entry,
+                      tmp[1])
+    os.close(tmp[0])
+    os.remove(tmp[1])
+
+  def testDownloadResourceToMemory(self):
+    if self.resource_type != 'collection':
+      data = None
+      if self.resource_export is not None:
+        extra_params = {'exportFormat': self.resource_export,
+                        'format': self.resource_export}
+        data = self.client.DownloadResourceToMemory(
+            self.resource, extra_params=extra_params)
+      else:
+        data = self.client.DownloadResourceToMemory(self.resource)
+      if self.resource_type == 'empty_document':
+        self.assertEqual(len(data), 3)
+      else:
+        self.assertNotEqual(len(data), 0)
+    else:
+      # Cannot download collections
+      self.assertRaises(ValueError, self.client.DownloadResourceToMemory,
+                        self.resource)
+
+  def testDelete(self):
+    self.assertEqual(self.resource.deleted, None)
+    self.client.DeleteResource(self.resource, force=True)
+    self.resource = self.client.GetResource(self.resource)
+    self.assertNotEqual(self.resource.deleted, None)
+    self.client.DeleteResource(self.resource, permanent=True, force=True)
+    self.assertRaises(gdata.client.RequestError, self.client.GetResource,
+                      self.resource)
+
+
+class AclTest(DocsTestCase):
+  def testGetAcl(self):
+    acl_feed = self.client.GetResourceAcl(self.resource)
     self.assert_(isinstance(acl_feed, gdata.docs.data.AclFeed))
-    self.assert_(isinstance(acl_feed.entry[0], gdata.docs.data.Acl))
+    self.assertEqual(len(acl_feed.entry), 1)
+    self.assert_(isinstance(acl_feed.entry[0], gdata.docs.data.AclEntry))
     self.assert_(acl_feed.entry[0].scope is not None)
     self.assert_(acl_feed.entry[0].role is not None)
 
-  def testGetRevisionFeed(self):
-    if not conf.options.get_value('runlive') == 'true':
+  def testGetAclEntry(self):
+    acl_feed = self.client.GetResourceAcl(self.resource)
+    acl_entry = acl_feed.entry[0]
+    same_acl_entry = self.client.GetAclEntry(acl_entry)
+    self.assert_(isinstance(same_acl_entry, gdata.docs.data.AclEntry))
+    self.assertEqual(acl_entry.GetSelfLink().href,
+                     same_acl_entry.GetSelfLink().href)
+    self.assertEqual(acl_entry.title.text, same_acl_entry.title.text)
+
+  def testAddAclEntry(self):
+    acl_entry_to_add = gdata.docs.data.AclEntry.GetInstance(
+        role='writer', scope_type='default', key=True)
+    
+    new_acl_entry = self.client.AddAclEntry(self.resource, acl_entry_to_add)
+    self.assertEqual(acl_entry_to_add.scope.type, new_acl_entry.scope.type)
+    self.assertEqual(new_acl_entry.scope.value, None)
+    # Key will always be overridden on add
+    self.assertEqual(acl_entry_to_add.with_key.role.value,
+                     new_acl_entry.with_key.role.value)
+    acl_feed = self.client.GetResourceAcl(self.resource)
+    self.assert_(isinstance(acl_feed, gdata.docs.data.AclFeed))
+    self.assert_(isinstance(acl_feed.entry[0], gdata.docs.data.AclEntry))
+    self.assert_(isinstance(acl_feed.entry[1], gdata.docs.data.AclEntry))
+
+  def testUpdateAclEntry(self):
+    acl_entry_to_add = gdata.docs.data.AclEntry.GetInstance(
+        role='reader', scope_type='user', scope_value='jeff@example.com',
+        key=True)
+    other_acl_entry = gdata.docs.data.AclEntry.GetInstance(
+        role='writer', scope_type='user', scope_value='jeff@example.com')
+    
+    new_acl_entry = self.client.AddAclEntry(self.resource, acl_entry_to_add)
+    new_acl_entry.with_key = None
+    new_acl_entry.scope = other_acl_entry.scope
+    new_acl_entry.role = other_acl_entry.role
+    updated_acl_entry = self.client.UpdateAclEntry(new_acl_entry)
+
+    self.assertEqual(updated_acl_entry.GetSelfLink().href,
+                     new_acl_entry.GetSelfLink().href)
+    self.assertEqual(updated_acl_entry.title.text, new_acl_entry.title.text)
+    self.assertEqual(updated_acl_entry.scope.type, other_acl_entry.scope.type)
+    self.assertEqual(updated_acl_entry.scope.value, other_acl_entry.scope.value)
+    self.assertEqual(updated_acl_entry.role.value, other_acl_entry.role.value)
+    self.assertEqual(updated_acl_entry.with_key, None)
+
+  def testDeleteAclEntry(self):
+    acl_entry_to_add = gdata.docs.data.AclEntry.GetInstance(
+        role='writer', scope_type='user', scope_value='joe@example.com',
+        key=True)
+    acl_feed = self.client.GetResourceAcl(self.resource)
+    new_acl_entry = self.client.AddAclEntry(self.resource, acl_entry_to_add)
+    acl_feed = self.client.GetResourceAcl(self.resource)
+
+    self.assert_(isinstance(acl_feed, gdata.docs.data.AclFeed))
+    self.assertEqual(len(acl_feed.entry), 2)
+    self.assert_(isinstance(acl_feed.entry[0], gdata.docs.data.AclEntry))
+    self.assert_(isinstance(acl_feed.entry[1], gdata.docs.data.AclEntry))
+
+    self.client.DeleteAclEntry(new_acl_entry)
+
+    acl_feed = self.client.GetResourceAcl(self.resource)
+    self.assert_(isinstance(acl_feed, gdata.docs.data.AclFeed))
+    self.assertEqual(len(acl_feed.entry), 1)
+    self.assert_(isinstance(acl_feed.entry[0], gdata.docs.data.AclEntry))
+
+
+class RevisionsTest(DocsTestCase):
+  def testGetRevisions(self):
+    # There are no revisions of collections
+    if self.resource_type != 'collection':
+      revisions = self.client.GetRevisions(self.resource)
+      self.assert_(isinstance(revisions, gdata.docs.data.RevisionFeed))
+      self.assert_(isinstance(revisions.entry[0], gdata.docs.data.Revision))
+      # Currently, there is a bug where new presentations have 2 revisions.
+      if self.resource_type != 'presentation':
+        self.assertEqual(len(revisions.entry), 1)
+
+  def testGetRevision(self):
+    # There are no revisions of collections
+    if self.resource_type != 'collection':
+      revisions = self.client.GetRevisions(self.resource)
+      entry = revisions.entry[0]
+      new_entry = self.client.GetRevision(entry)
+      self.assertEqual(entry.GetSelfLink().href, new_entry.GetSelfLink().href)
+      self.assertEqual(entry.title.text, new_entry.title.text)
+
+  def testGetRevisionBySelfLink(self):
+    # There are no revisions of collections
+    if self.resource_type != 'collection':
+      revisions = self.client.GetRevisions(self.resource)
+      entry = revisions.entry[0]
+      new_entry = self.client.GetRevisionBySelfLink(entry.GetSelfLink().href)
+      self.assertEqual(entry.GetSelfLink().href, new_entry.GetSelfLink().href)
+      self.assertEqual(entry.title.text, new_entry.title.text)
+  
+  def testMultipleRevisionsAndUpdateResource(self):
+    if self.resource_type not in ['collection', 'presentation']:
+      revisions = self.client.GetRevisions(self.resource)
+      self.assertEqual(len(revisions.entry), 1)
+    # Currently, there is a bug where uploaded presentations have 2 revisions.
+    elif self.resource_type == 'presentation':
+      revisions = self.client.GetRevisions(self.resource)
+      self.assertEqual(len(revisions.entry), 2)
+
+    # Drawings do not currently support update, thus the rest of these 
+    # tests do not yet work as expected.
+    if self.resource_type == 'drawing':
       return
 
-    # Either load the recording or prepare to make a live request.
-    conf.configure_cache(self.client, 'testGetRevisionFeed')
+    entry = self._update()
+    self.assertEqual(entry.title.text, '%s Updated' % self.resource_title)
 
-    uri = 'http://docs.google.com/feeds/default/private/full/-/document'
-    feed = self.client.GetDocList(uri=uri, limit=1)
-    self.assertEqual(len(feed.entry), 1)
-    revision_feed = self.client.GetRevisions(feed.entry[0].resource_id.text)
-    self.assert_(isinstance(revision_feed, gdata.docs.data.RevisionFeed))
-    self.assert_(isinstance(revision_feed.entry[0], gdata.docs.data.Revision))
+    if self.resource_type != 'collection':
+      revisions = self.client.GetRevisions(entry)
+      self.assert_(isinstance(revisions, gdata.docs.data.RevisionFeed))
+      if self.resource_type == 'presentation':
+        self.assertEqual(len(revisions.entry), 3)
+        self.assert_(isinstance(revisions.entry[2], gdata.docs.data.Revision))
+      else:
+        self.assertEqual(len(revisions.entry), 2)
+      self.assert_(isinstance(revisions.entry[0], gdata.docs.data.Revision))
+      self.assert_(isinstance(revisions.entry[1], gdata.docs.data.Revision))
+
+  def testPublishRevision(self):
+    if self.resource_type in ['file', 'pdf', 'collection']:
+      return
+
+    # Drawings do not currently support update, thus this test would fail.
+    if self.resource_type == 'drawing':
+      return
+
+    entry = self._update()
+    revisions = self.client.GetRevisions(entry)
+    revision = self.client.PublishRevision(revisions.entry[1])
+    # Currently, there is a bug where uploaded presentations have 2 revisions.
+    if self.resource_type == 'presentation':
+      revisions = self.client.GetRevisions(entry)
+      revision = revisions.entry[2]
+    self.assert_(isinstance(revision, gdata.docs.data.Revision))
+    self.assertEqual(revision.publish.value, 'true')
+    self.assertEqual(revision.publish_auto.value, 'false')
+
+    # The rest of the tests require an Apps domain
+    if 'gmail' in conf.options.get_value('username'):
+      return
+
+    self.assertEqual(revision.publish_outside_domain.value, 'false')
+
+    # Empty documents won't have further revisions b/c content didn't change
+    if self.resource_type == 'empty_document':
+      return
+
+    revisions = self.client.GetRevisions(entry)
+    if self.resource_type == 'presentation':
+      revision = self.client.PublishRevision(
+          revisions.entry[2], publish_auto=True, publish_outside_domain=True)
+    else:
+      revision = self.client.PublishRevision(
+          revisions.entry[1], publish_auto=True, publish_outside_domain=True)
+      if self.resource_type == 'spreadsheet':
+        revision = client.GetRevisions(entry).entry[1]
+    self.assert_(isinstance(revision, gdata.docs.data.Revision))
+    self.assertEqual(revision.publish.value, 'true')
+    self.assertEqual(revision.publish_auto.value, 'true')
+    self.assertEqual(revision.publish_outside_domain.value, 'true')
+
+    revision = self.client.GetRevision(revisions.entry[0])
+    self.assertEqual(revision.publish, None)
+    self.assertEqual(revision.publish_auto, None)
+    self.assertEqual(revision.publish_outside_domain, None)
+
+  def testDownloadRevision(self):
+    if self.resource_type == 'collection':
+      return
+
+    revisions = self.client.GetRevisions(self.resource)
+    tmp = tempfile.mkstemp()
+    self.client.DownloadRevision(revisions.entry[0], tmp[1])
+    os.close(tmp[0])
+    os.remove(tmp[1])
+
+  def testDeleteRevision(self):
+    # API can only delete file revisions
+    if self.resource_type != 'file':
+      return
+
+    entry = self._update()
+    revisions = self.client.GetRevisions(entry)
+    self.assertEqual(len(revisions.entry), 2)
+    self.client.DeleteRevision(revisions.entry[1])
+    self.assert_(isinstance(revisions, gdata.docs.data.RevisionFeed))
+    self.assert_(isinstance(revisions.entry[0], gdata.docs.data.Revision))
+    revisions = self.client.GetRevisions(entry)
+    self.assertEqual(len(revisions.entry), 1)
 
 
-class DocsRevisionsTest(DocsTestCase):
+class ChangesTest(DocsTestCase):
+  def testGetChanges(self):
+    # This test assumes that by the time this test is run, the account
+    # being used already has a number of changes
 
+    changes = self.client.GetChanges(max_results=5)
+    self.assert_(isinstance(changes, gdata.docs.data.ChangeFeed))
+    self.assert_(len(changes.entry) <= 5)
+    self.assert_(isinstance(changes.entry[0], gdata.docs.data.Change))
+    self._update()
+    changes = self.client.GetChanges(changes.entry[0].changestamp.value, 5)
+    self.assert_(isinstance(changes, gdata.docs.data.ChangeFeed))
+    self.assert_(len(changes.entry) <= 5)
+    self.assert_(isinstance(changes.entry[0], gdata.docs.data.Change))
+
+
+class MetadataTest(DocsTestCase):
   def setUp(self):
-    self.client = None
-    if conf.options.get_value('runlive') == 'true':
+    if conf.options.get_value('runlive') != 'true':
+      raise RuntimeError('Live tests require --runlive true')
+    else:
       self.client = gdata.docs.client.DocsClient()
-      self.client.ssl = conf.options.get_value('ssl') == 'true'
+      if conf.options.get_value('ssl') == 'true':
+        self.client.ssl = True
       conf.configure_client(self.client, 'DocsTest', self.client.auth_service)
-      conf.configure_cache(self.client, 'testDocsRevisions')
-      try:
-        self.testdoc = self.client.Create(
-            gdata.docs.data.DOCUMENT_LABEL, 'My Doc')
-        # Because of an etag change issue, we must sleep for a few seconds
-        time.sleep(10)
-      except:
-        self.tearDown()
-        raise
-      try:
-        self.testdoc = self.client.GetDoc(self.testdoc.resource_id.text)
-        self.testfile = self.client.Upload(
-            'test.bin', 'My Binary File', content_type='application/octet-stream')
-        # Because of an etag change issue, we must sleep for a few seconds
-        time.sleep(10)
-        self.testfile = self.client.GetDoc(self.testfile.resource_id.text)
-      except:
-        self.tearDown()
-        raise
-    
+      conf.configure_cache(self.client, str(self.__class__))
+      if conf.options.get_value('clean') == 'true':
+        self._delete_all()
+
   def tearDown(self):
-    if conf.options.get_value('runlive') == 'true':
-      # Do a best effort tearDown, so pass on any exception
-      try:
-        self.client.Delete(self.testdoc)
-      except:
-        pass
-      try:
-        self.client.Delete(self.testfile)
-      except:
-        pass
     conf.close_client(self.client)
 
-  def testArbFileRevisions(self):
-    if not conf.options.get_value('runlive') == 'true':
-      return
-    revisions = self.client.GetRevisions(self.testfile.resource_id.text)
-    self.assert_(isinstance(revisions, gdata.docs.data.RevisionFeed))
-    self.assert_(isinstance(revisions.entry[0], gdata.docs.data.Revision))
-    self.assertEqual(len(revisions.entry), 1)
-
-    ms = gdata.data.MediaSource(
-        file_path='test.bin', content_type='application/octet-stream')
-    self.testfile.title.text = 'My Binary File Updated'
-    self.testfile = self.client.Update(self.testfile, media_source=ms)
-    self.assertEqual(self.testfile.title.text, 'My Binary File Updated')
-
-    revisions = self.client.GetRevisions(self.testfile.resource_id.text)
-    self.assert_(isinstance(revisions, gdata.docs.data.RevisionFeed))
-    self.assert_(isinstance(revisions.entry[0], gdata.docs.data.Revision))
-    self.assert_(isinstance(revisions.entry[1], gdata.docs.data.Revision))
-    self.assertEqual(len(revisions.entry), 2)
-
-    self.client.Delete(revisions.entry[1], force=True)
-    revisions = self.client.GetRevisions(self.testfile.resource_id.text)
-    self.assert_(isinstance(revisions, gdata.docs.data.RevisionFeed))
-    self.assert_(isinstance(revisions.entry[0], gdata.docs.data.Revision))
-    self.assertEqual(len(revisions.entry), 1)
-
-  def testDocRevisions(self):
-    if not conf.options.get_value('runlive') == 'true':
-      return
-    revisions = self.client.GetRevisions(self.testdoc.resource_id.text)
-    self.assert_(isinstance(revisions, gdata.docs.data.RevisionFeed))
-    self.assert_(isinstance(revisions.entry[0], gdata.docs.data.Revision))
-    self.assertEqual(len(revisions.entry), 1)
-
-    ms = gdata.data.MediaSource(
-        file_path='test.doc', content_type='application/msword')
-    self.testdoc.title.text = 'My Doc Updated'
-    self.testdoc = self.client.Update(self.testdoc, media_source=ms)
-
-    revisions = self.client.GetRevisions(self.testdoc.resource_id.text)
-    self.assert_(isinstance(revisions, gdata.docs.data.RevisionFeed))
-    self.assert_(isinstance(revisions.entry[0], gdata.docs.data.Revision))
-    self.assert_(isinstance(revisions.entry[1], gdata.docs.data.Revision))
-    self.assertEqual(len(revisions.entry), 2)
-
-
-class CreatingAndDeletionTest(DocsTestCase):
-
-  def testCreateAndMoveDoc(self):
-    if not conf.options.get_value('runlive') == 'true':
-      return
-
-    # Either load the recording or prepare to make a live request.
-    conf.configure_cache(self.client, 'testCreateAndMoveDoc')
-
-    new_folder = self.client.Create(gdata.docs.data.FOLDER_LABEL, 'My Folder')
-    self.assertEqual(new_folder.title.text, 'My Folder')
-    self.assertEqual(new_folder.GetDocumentType(), 'folder')
-
-    new_doc = self.client.Create(gdata.docs.data.DOCUMENT_LABEL, 'My Doc',
-                                 writers_can_invite=False)
-    self.assertEqual(new_doc.GetDocumentType(), 'document')
-    self.assertEqual(new_doc.title.text, 'My Doc')
-    self.assertEqual(new_doc.writers_can_invite.value, 'false')
-
-    # Move doc into folder
-    new_entry = self.client.Move(new_doc, new_folder)
-    self.assertEqual(len(new_entry.InFolders()), 1)
-    self.assertEqual(new_entry.InFolders()[0].title, 'My Folder')
-
-    # Create new spreadsheet inside the folder.
-    new_spread = self.client.Create(
-        gdata.docs.data.SPREADSHEET_LABEL, 'My Spread', folder_or_id=new_folder)
-    self.assertEqual(new_spread.GetDocumentType(), 'spreadsheet')
-    self.assertEqual(len(new_spread.InFolders()), 1)
-    self.assertEqual(new_spread.InFolders()[0].title, 'My Folder')
-
-    # Create new folder, and move spreadsheet into that folder too.
-    new_folder2 = self.client.Create(gdata.docs.data.FOLDER_LABEL, 'My Folder2')
-    self.assertEqual(new_folder2.title.text, 'My Folder2')
-    self.assertEqual(new_folder2.GetDocumentType(), 'folder')
-    moved_entry = self.client.Move(
-        new_spread, new_folder2, keep_in_folders=True)
-    self.assertEqual(len(moved_entry.InFolders()), 2)
-
-    # Move spreadsheet to root level
-    was_moved = self.client.Move(moved_entry)
-    self.assert_(was_moved)
-    spread_entry = self.client.GetDoc(moved_entry.resource_id.text)
-    self.assertEqual(len(spread_entry.InFolders()), 0)
-    
-    # Clean up our mess.
-    self.client.Delete(new_folder.GetEditLink().href, force=True)
-    self.client.Delete(new_folder2.GetEditLink().href, force=True)
-    self.client.Delete(new_doc.GetEditLink().href, force=True)
-    self.client.Delete(spread_entry.GetEditLink().href, force=True)
-
-
-class DocumentListUploadTest(DocsTestCase):
-
-  def testUploadAndDeleteDocument(self):
-    if not conf.options.get_value('runlive') == 'true':
-      return
-
-    # Either load the recording or prepare to make a live request.
-    conf.configure_cache(self.client, 'testUploadAndDeleteDocument')
-
-    ms = gdata.data.MediaSource(file_path='test.doc',
-                                content_type='application/msword')
-
-    entry = self.client.Upload(ms, 'test doc')
-    self.assertEqual(entry.title.text, 'test doc')
-    self.assertEqual(entry.GetDocumentType(), 'document')
-    self.assert_(isinstance(entry, gdata.docs.data.DocsEntry))
-    self.client.Delete(entry, force=True)
-
-  def testUploadAndDeletePdf(self):
-    if not conf.options.get_value('runlive') == 'true':
-      return
-
-    # Either load the recording or prepare to make a live request.
-    conf.configure_cache(self.client, 'testUploadAndDeletePdf')
-
-    # Try passing in filename isntead of MediaSource object on this upload.
-    entry = self.client.Upload(
-        'test.pdf', 'test pdf', content_type='application/pdf')
-    self.assertEqual(entry.title.text, 'test pdf')
-    self.assertEqual(entry.GetDocumentType(), 'pdf')
-    self.assert_(isinstance(entry, gdata.docs.data.DocsEntry))
-    self.client.Delete(entry, force=True)
-
-
-class DocumentListExportTest(DocsTestCase):
-
-  def testExportDocument(self):
-    if not conf.options.get_value('runlive') == 'true':
-      return
-
-    # Either load the recording or prepare to make a live request.
-    conf.configure_cache(self.client, 'testExportDocument')
-
-    uri = 'http://docs.google.com/feeds/default/private/full/-/document'
-    feed = self.client.GetDocList(uri=uri, limit=1)
-    file_paths = ['./downloadedTest.doc', './downloadedTest.html',
-                  './downloadedTest.odt', './downloadedTest.pdf',
-                  './downloadedTest.png', './downloadedTest.rtf',
-                  './downloadedTest.txt', './downloadedTest.zip']
-    for path in file_paths:
-      self.client.Export(feed.entry[0], path)
-      self.assert_(os.path.exists(path))
-      self.assert_(os.path.getsize(path))
-      os.remove(path)
-
-  def testExportNonExistentDocument(self):
-    if not conf.options.get_value('runlive') == 'true':
-      return
-
-    # Either load the recording or prepare to make a live request.
-    conf.configure_cache(self.client, 'testExportNonExistentDocument')
-
-    path = './ned.txt'
-    self.assert_(not os.path.exists(path))
-
-    exception_raised = False
-    try:
-      self.client.Export('non_existent_doc', path)
-    except Exception, e:  # expected
-      exception_raised = True
-
-    self.assert_(exception_raised)
-    self.assert_(not os.path.exists(path))
-
-  def testDownloadPdf(self):
-    if not conf.options.get_value('runlive') == 'true':
-      return
-
-    # Either load the recording or prepare to make a live request.
-    conf.configure_cache(self.client, 'testDownloadPdf')
-
-    uri = 'http://docs.google.com/feeds/default/private/full/-/pdf'
-    feed = self.client.GetDocList(uri=uri, limit=1)
-    path = './downloadedTest.pdf'
-    self.client.Download(feed.entry[0], path)
-    self.assert_(os.path.exists(path))
-    self.assert_(os.path.getsize(path))
-    os.remove(path)
+  def testMetadata(self):
+    metadata = self.client.GetMetadata()
+    self.assert_(isinstance(metadata, gdata.docs.data.Metadata))
+    self.assertNotEqual(int(metadata.quota_bytes_total.text), 0)
+    self.assertEqual(int(metadata.quota_bytes_used.text), 0)
+    self.assertEqual(int(metadata.quota_bytes_used_in_trash.text), 0)
+    self.assertNotEqual(len(metadata.import_formats), 0)
+    self.assertNotEqual(len(metadata.export_formats), 0)
+    self.assertNotEqual(len(metadata.features), 0)
+    self.assertNotEqual(len(metadata.max_upload_sizes), 0)
 
 
 def suite():
-  return conf.build_suite([DocsFetchingDataTest, CreatingAndDeletionTest,
-                           DocumentListUploadTest, DocumentListExportTest,
-                           DocsRevisionsTest])
-
+  suite = unittest.TestSuite()
+  for key, value in RESOURCES.iteritems():
+    for case in [ResourcesTest, AclTest, RevisionsTest, ChangesTest]:
+      tests = unittest.TestLoader().loadTestsFromTestCase(case)
+      for test in tests:
+        test.resource_type = key
+        test.resource_label = value[0]
+        test.resource_title = value[1]
+        test.resource_path = value[2]
+        test.resource_alt_path = value[3]
+        test.resource_mime = value[4]
+        test.resource_export = value[5]
+        suite.addTest(test)
+  suite.addTests(unittest.TestLoader().loadTestsFromTestCase(MetadataTest))
+  return suite
+      
 
 if __name__ == '__main__':
   unittest.TextTestRunner().run(suite())

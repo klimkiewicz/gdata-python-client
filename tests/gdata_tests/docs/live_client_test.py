@@ -91,7 +91,10 @@ RESOURCES = {
 
 class DocsTestCase(unittest.TestCase):
   def shortDescription(self):
-    return '%s for %s' % (self.__class__.__name__, self.resource_type)
+    if hasattr(self, 'resource_type'):
+      return '%s for %s' % (self.__class__.__name__, self.resource_type)
+    else:
+      return self.__class__.__name__
 
   def _delete(self, resource):
     try:
@@ -131,8 +134,8 @@ class DocsTestCase(unittest.TestCase):
       raise RuntimeError('Live tests require --runlive true')
 
     self.client = gdata.docs.client.DocsClient()
-    if conf.options.get_value('ssl') == 'true':
-      self.client.ssl = True
+    if conf.options.get_value('ssl') == 'false':
+      self.client.ssl = False
     conf.configure_client(self.client, 'DocsTest', self.client.auth_service)
     conf.configure_cache(self.client, str(self.__class__))
     if conf.options.get_value('clean') == 'true':
@@ -198,7 +201,7 @@ class ResourcesTest(DocsTestCase):
 
     # Start off in 0 collections
     self.assertEqual(len(self.resource.InCollections()), 0)
-    
+
     # Move resource into collection
     entry = self.client.MoveResource(self.resource, collection)
     self.assertEqual(len(entry.InCollections()), 1)
@@ -292,7 +295,7 @@ class AclTest(DocsTestCase):
   def testAddAclEntry(self):
     acl_entry_to_add = gdata.docs.data.AclEntry.GetInstance(
         role='writer', scope_type='default', key=True)
-    
+
     new_acl_entry = self.client.AddAclEntry(self.resource, acl_entry_to_add)
     self.assertEqual(acl_entry_to_add.scope.type, new_acl_entry.scope.type)
     self.assertEqual(new_acl_entry.scope.value, None)
@@ -310,7 +313,7 @@ class AclTest(DocsTestCase):
         key=True)
     other_acl_entry = gdata.docs.data.AclEntry.GetInstance(
         role='writer', scope_type='user', scope_value='jeff@example.com')
-    
+
     new_acl_entry = self.client.AddAclEntry(self.resource, acl_entry_to_add)
     new_acl_entry.with_key = None
     new_acl_entry.scope = other_acl_entry.scope
@@ -374,7 +377,7 @@ class RevisionsTest(DocsTestCase):
       new_entry = self.client.GetRevisionBySelfLink(entry.GetSelfLink().href)
       self.assertEqual(entry.GetSelfLink().href, new_entry.GetSelfLink().href)
       self.assertEqual(entry.title.text, new_entry.title.text)
-  
+
   def testMultipleRevisionsAndUpdateResource(self):
     if self.resource_type not in ['collection', 'presentation']:
       revisions = self.client.GetRevisions(self.resource)
@@ -491,6 +494,16 @@ class ChangesTest(DocsTestCase):
     self.assert_(len(changes.entry) <= 5)
     self.assert_(isinstance(changes.entry[0], gdata.docs.data.Change))
 
+  def testDeleteResourceCreatesNewChange(self):
+    """Ensure that deleting a resource causes a new change entry."""
+    self._update()
+    changes = self.client.GetChanges(max_results=1)
+    latest = changes.entry[0].changestamp.value
+    self._delete(self.resource)
+    time.sleep(10)
+    changes = self.client.GetChanges(max_results=1)
+    self.assert_(latest < changes.entry[0].changestamp.value)
+
 
 class MetadataTest(DocsTestCase):
   def setUp(self):
@@ -536,7 +549,7 @@ def suite():
         suite.addTest(test)
   suite.addTests(unittest.TestLoader().loadTestsFromTestCase(MetadataTest))
   return suite
-      
+
 
 if __name__ == '__main__':
   unittest.TextTestRunner().run(suite())
